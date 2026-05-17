@@ -1,14 +1,34 @@
 import streamlit as st
 import requests
+import base64
+from engine import QUESTION_MAP
 
-API_URL = "http://localhost:8000"
+def get_base64_image(path):
+    with open(path, "rb") as f:
+        return base64.b64encode(f.read()).decode()
+
+bg = get_base64_image("Gemini_Generated_Image_2q2v582q2v582q2v.png")
+
+API_URL = os.environ.get("API_URL", "http://localhost:8000")
 
 st.set_page_config(
     page_title="IPL Akinator",
     page_icon="🏏",
     layout="centered"
 )
-
+st.markdown(f"""
+<style>
+[data-testid="stAppViewContainer"] {{
+    background-image: linear-gradient(
+        rgba(9,9,11,0.82),
+        rgba(9,9,11,0.92)
+    ), url("data:image/png;base64,{bg}") !important;
+    background-size: cover !important;
+    background-position: center top !important;
+    background-attachment: fixed !important;
+}}
+</style>
+""", unsafe_allow_html=True)
 # ── Global CSS (single block, no f-strings, no quotes inside style values) ──
 st.markdown("""
 <style>
@@ -140,6 +160,7 @@ def send_answer(response):
         ).json()
         st.session_state.action = res["action"]
         st.session_state.turn  += 1
+        st.session_state.score_history = res.get("score_history", [])  # ← NEW
         if res["action"] == "question":
             st.session_state.question  = res["question"]
             st.session_state.col       = res["col"]
@@ -152,77 +173,95 @@ def send_answer(response):
 
 
 def player_photo_url(name: str) -> str:
-    """Fetch player photo from Wikipedia, with better IPL player handling."""
+    # Name mapping for players whose initials confuse Wikipedia
+    NAME_OVERRIDES = {
+        "HH Pandya":  "Hardik Pandya",
+        "KH Pandya":  "Krunal Pandya",
+        "RG Sharma":  "Rohit Sharma",
+        "MS Dhoni":   "MS Dhoni",
+        "SK Raina":   "Suresh Raina",
+        "RA Jadeja":  "Ravindra Jadeja",
+        "AB de Villiers": "AB de Villiers",
+        "CH Gayle":   "Chris Gayle",
+        "SR Tendulkar": "Sachin Tendulkar",
+        "V Kohli":    "Virat Kohli",
+        "RR Pant":    "Rishabh Pant",
+        "JJ Bumrah":  "Jasprit Bumrah",
+        "YK Pathan":  "Yusuf Pathan",
+        "IK Pathan":  "Irfan Pathan",
+        "PP Chawla":  "Piyush Chawla",
+        "AM Rahane":  "Ajinkya Rahane",
+        "KA Pollard": "Kieron Pollard",
+        "DJ Bravo":   "Dwayne Bravo",
+        "BA Stokes":  "Ben Stokes",
+        "KS Williamson": "Kane Williamson",
+        "AR Patel" : "Axar Patel",
+        "YS Chahal": "Yuzvendra Chahal",
+        "SP Narine": "Sunil Narine",
+        "AD Russell" : "Andre Russell",
+        "MJ Santner": "Mitchell Santner",
+        "SM Curran": "Sam Curran",
+        "DL Chahar": "Deepak Chahar",
+    }
+
+    search_name = NAME_OVERRIDES.get(name, name)
+
     try:
-        # Try multiple search strategies for IPL players
-        search_terms = [
-            name.strip(),  # Original name
-            name.strip().replace(" ", "_"),  # With underscores
-            f"{name.strip()}_(cricketer)",  # Add cricketer suffix
-        ]
-        
-        for term in search_terms[:2]:  # Try first two variations
-            encoded_name = term.replace(" ", "_")
-            
-            # First try direct page summary
-            r = requests.get(
-                f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded_name}",
-                timeout=5,
-                headers={'User-Agent': 'IPLAkinator/1.0'}
-            )
-            
-            if r.status_code == 200:
-                data = r.json()
+        # Try direct Wikipedia lookup with full name
+        encoded = search_name.replace(" ", "_")
+        r = requests.get(
+            f"https://en.wikipedia.org/api/rest_v1/page/summary/{encoded}",
+            timeout=5,
+            headers={'User-Agent': 'IPLAkinator/1.0'}
+        )
+        if r.status_code == 200:
+            data = r.json()
+            # Reject if it's not a person page
+            if data.get("type") == "standard" and "cricketer" in data.get("description", "").lower():
                 thumb = data.get("thumbnail", {}).get("source", "")
                 if thumb:
-                    # Get highest quality version
                     for size in ["/80px-", "/100px-", "/150px-", "/220px-", "/320px-"]:
                         thumb = thumb.replace(size, "/400px-")
                     return thumb
-                    
-            # If not found, try search API
-            search_r = requests.get(
-                f"https://en.wikipedia.org/w/api.php",
-                params={
-                    'action': 'query',
-                    'list': 'search',
-                    'srsearch': f"{name} cricketer",
-                    'format': 'json',
-                    'utf8': 1
-                },
-                timeout=5,
-                headers={'User-Agent': 'IPLAkinator/1.0'}
-            )
-            
-            if search_r.status_code == 200:
-                search_data = search_r.json()
-                if search_data.get('query', {}).get('search'):
-                    # Get the first search result title
-                    page_title = search_data['query']['search'][0]['title']
-                    # Try to get summary with the found title
-                    final_r = requests.get(
-                        f"https://en.wikipedia.org/api/rest_v1/page/summary/{page_title}",
-                        timeout=5,
-                        headers={'User-Agent': 'IPLAkinator/1.0'}
-                    )
-                    if final_r.status_code == 200:
-                        final_data = final_r.json()
-                        thumb = final_data.get("thumbnail", {}).get("source", "")
+
+        # Fallback: search API
+        search_r = requests.get(
+            "https://en.wikipedia.org/w/api.php",
+            params={
+                'action': 'query',
+                'list': 'search',
+                'srsearch': f"{search_name} cricketer IPL",
+                'format': 'json',
+                'utf8': 1
+            },
+            timeout=5,
+            headers={'User-Agent': 'IPLAkinator/1.0'}
+        )
+        if search_r.status_code == 200:
+            results = search_r.json().get('query', {}).get('search', [])
+            for result in results[:3]:
+                title = result['title']
+                final_r = requests.get(
+                    f"https://en.wikipedia.org/api/rest_v1/page/summary/{title.replace(' ', '_')}",
+                    timeout=5,
+                    headers={'User-Agent': 'IPLAkinator/1.0'}
+                )
+                if final_r.status_code == 200:
+                    data = final_r.json()
+                    desc = data.get("description", "").lower()
+                    # Only accept if it's a person/cricketer page
+                    if any(word in desc for word in ["cricketer", "cricket", "batsman", "bowler"]):
+                        thumb = data.get("thumbnail", {}).get("source", "")
                         if thumb:
                             for size in ["/80px-", "/100px-", "/150px-", "/220px-", "/320px-"]:
                                 thumb = thumb.replace(size, "/400px-")
                             return thumb
-                            
-    except Exception as e:
-        pass  # Silently fall back to avatar
-    
-    # Fallback to initials avatar
+    except Exception:
+        pass
+
+    # Initials avatar fallback
     names = name.split()
-    if len(names) >= 2:
-        initials = names[0][0].upper() + names[1][0].upper()
-    else:
-        initials = name[0].upper() if name else "?"
-    
+    initials = (names[0][0] + names[-1][0]).upper() if len(names) >= 2 else name[0].upper()
     return (
         f"https://ui-avatars.com/api/?name={initials}"
         f"&background=18181D&color=C8A96E&size=400&bold=true&font-size=0.4"
@@ -335,20 +374,36 @@ elif st.session_state.action == "question":
         unsafe_allow_html=True
     )
 
-    c1, c2, c3 = st.columns(3)
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         if st.button("Yes", use_container_width=True):
-            send_answer("yes")
-            st.rerun()
+            send_answer("yes");  st.rerun()
     with c2:
         if st.button("No", use_container_width=True):
-            send_answer("no")
-            st.rerun()
+            send_answer("no");   st.rerun()
     with c3:
-        if st.button("Not sure", use_container_width=True):
-            send_answer("unsure")
-            st.rerun()
+        if st.button("Maybe", use_container_width=True):
+            send_answer("maybe"); st.rerun()
+    with c4:
+        if st.button("Don't Know", use_container_width=True):
+            send_answer("unsure"); st.rerun()
 
+    # ── Score history ──
+    if st.session_state.get("score_history"):
+        st.markdown('<div style="margin-top:2rem;"></div>', unsafe_allow_html=True)
+        with st.expander("📊 Score history so far"):
+            for entry in st.session_state.score_history:
+                st.markdown(
+                    f'**Q{entry["turn"]}** `{entry["feature"]}` → **{entry["response"].upper()}**'
+                )
+                for g in entry["top3"]:
+                    bar = "█" * int(g["confidence"] / 5)
+                    st.markdown(
+                        f'&nbsp;&nbsp;&nbsp;`{g["player"]:<25}` '
+                        f'score: `{g["score"]:+.1f}` &nbsp; confidence: `{g["confidence"]}%` {bar}',
+                        unsafe_allow_html=True
+                    )
+    
 
 # ══════════════════════════════════════════════════════════════
 # GUESS SCREEN
@@ -415,17 +470,93 @@ elif st.session_state.action == "guess":
                 )
 
     st.write("")
-    _, col_c, _ = st.columns([1, 1.4, 1])
-    with col_c:
+    
+    # ── Score History Table ──
+    if st.session_state.get("score_history"):
+        st.markdown(
+            '<div style="height:1px;background:rgba(255,255,255,0.06);margin:2rem 0;"></div>',
+            unsafe_allow_html=True
+        )
+        st.markdown(
+            '<p style="font-family:DM Mono,monospace;font-size:0.7rem;'
+            'letter-spacing:0.2em;color:#C8A96E;text-transform:uppercase;'
+            'text-align:center;margin-bottom:1.5rem;">Question Log</p>',
+            unsafe_allow_html=True
+        )
+
+        for entry in st.session_state.score_history:
+            response_colors = {
+                "yes": "#4ECCA3", "no": "#FF6B6B",
+                "maybe": "#C8A96E", "unsure": "#7EBFFF"
+            }
+            resp_color = response_colors.get(entry["response"], "#FAFAFA")
+
+            st.markdown(
+                f'<div style="margin-bottom:1rem;padding:0.8rem 1rem;'
+                f'background:#18181D;border-radius:4px;'
+                f'border-left:2px solid {resp_color};">'
+                f'<div style="display:flex;justify-content:space-between;margin-bottom:0.6rem;">'
+                f'<span style="font-family:DM Mono,monospace;font-size:0.72rem;'
+                f'color:#52525B;">Q{entry["turn"]}</span>'
+                f'<span style="font-family:DM Mono,monospace;font-size:0.72rem;'
+                f'color:{resp_color};text-transform:uppercase;">{entry["response"]}</span>'
+                f'</div>'
+                f'<div style="font-size:0.9rem;color:#FAFAFA;margin-bottom:0.6rem;">'
+                f'{QUESTION_MAP.get(entry["feature"], entry["feature"])}</div>'
+                f'<div style="font-family:DM Mono,monospace;font-size:0.72rem;color:#52525B;">'
+                + " &nbsp;·&nbsp; ".join(
+                    f'<span style="color:#FAFAFA">{g["player"]}</span> '
+                    f'<span style="color:{resp_color}">{g["confidence"]}%</span> '
+                    f'<span style="color:#3F3F46">({g["score"]:+.1f}pts)</span>'
+                    for g in entry["top3"]
+                ) +
+                f'</div></div>',
+                unsafe_allow_html=True
+            )
+            
+            
+    st.write("")
+
+    # ── Continue or Play Again ──
+    st.markdown(
+        '<p style="text-align:center;color:#71717A;font-size:0.85rem;'
+        'margin-bottom:1rem;">Not satisfied? Keep going — questions won\'t repeat.</p>',
+        unsafe_allow_html=True
+    )
+
+    c1, c2 = st.columns(2)
+    with c1:
+        if st.button("Continue Guessing", use_container_width=True):
+            try:
+                res = requests.post(
+                    f"{API_URL}/continue",
+                    json={"session_id": st.session_state.session_id}
+                ).json()
+                if res.get("action") == "question":
+                    st.session_state.action    = "question"
+                    st.session_state.question  = res["question"]
+                    st.session_state.col       = res["col"]
+                    st.session_state.pool_size = res["pool_size"]
+                    st.session_state.guesses   = res.get("guesses", [])
+                    st.rerun()
+                elif res.get("error") == "no_more_questions":
+                # Reset asked features on backend and try again
+                    res2 = requests.post(
+                        f"{API_URL}/reset_questions",
+                        json={"session_id": st.session_state.session_id}
+                    ).json()
+                    if res2.get("action") == "question":
+                        st.session_state.action    = "question"
+                        st.session_state.question  = res2["question"]
+                        st.session_state.col       = res2["col"]
+                        st.session_state.pool_size = res2["pool_size"]
+                        st.rerun()
+            except Exception as e:
+                st.error(f"Error: {e}")
+
+    with c2:
         if st.button("Play Again", use_container_width=True):
             for key in list(defaults.keys()):
                 if key in st.session_state:
                     del st.session_state[key]
             st.rerun()
-
-    st.markdown(
-        '<p style="text-align:center;color:#3F3F46;'
-        'font-family:DM Mono,monospace;font-size:0.7rem;'
-        'letter-spacing:0.12em;margin-top:1.5rem;">IPL &nbsp;&middot;&nbsp; 2008 &ndash; 2024</p>',
-        unsafe_allow_html=True
-    )
