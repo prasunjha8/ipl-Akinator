@@ -98,13 +98,9 @@ The Streamlit app will typically be available at `http://localhost:8501`.
 3. Answer the questions presented by clicking **Yes**, **No**, or **Not sure**.
 4. After up to 20 questions (or when the engine is confident enough), the game will present its best guesses!
 
-## Contributing
-Contributions are welcome! If you'd like to improve the dataset, refine the scoring engine, or enhance the UI:
-1. Fork the repository.
-2. Create a feature branch .
-3. Commit your changes .
-4. Push to the branch .
-5. Open a Pull Request.
+## Deployed link : 
+https://loving-bravery-production.up.railway.app/
+
 
 ## Acknowledgments
 - Player images are dynamically fetched via the [Wikipedia API](https://en.wikipedia.org/api/rest_v1/).
